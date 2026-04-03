@@ -23,10 +23,15 @@ body{font-family:'Georgia','Noto Serif SC',serif;background:var(--dark);color:va
 ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.13);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.22)}
 
+/* DRAG BAR FOR MAC - invisible drag zone (using header instead) */
+/* Header now serves as drag region via data-tauri-drag-region */
+
 /* HEADER */
-#header{height:var(--hh);background:var(--dark);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:7px;flex-shrink:0;z-index:200}
-.logo-icon{width:28px;height:28px;background:var(--gold);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--dark);font-weight:700;font-family:'Georgia',serif;flex-shrink:0}
-.logo-text{font-size:14px;font-family:'Georgia',serif;color:rgba(255,255,255,0.85);letter-spacing:1px;margin-right:6px}
+#header{height:var(--hh);background:var(--dark);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:7px;flex-shrink:0;z-index:200;-webkit-app-region:drag;user-select:none;-webkit-user-select:none;touch-action:none;-webkit-user-select:none}
+#header *{user-select:none;-webkit-user-select:none}
+#header button,#header input,#header select,#header .hpi,#header #sync{-webkit-app-region:no-drag}
+.logo-icon{width:28px;height:28px;background:var(--gold);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--dark);font-weight:700;font-family:'Georgia',serif;flex-shrink:0;-webkit-app-region:drag;user-select:none;-webkit-user-select:none}
+.logo-text{font-size:14px;font-family:'Georgia',serif;color:rgba(255,255,255,0.85);letter-spacing:1px;margin-right:6px;-webkit-app-region:drag;user-select:none;-webkit-user-select:none}
 #hsp{flex:1}
 .hpi{font-size:11px;font-family:sans-serif;color:rgba(255,255,255,0.32);display:flex;align-items:center;gap:5px;margin-right:10px}
 .hpi strong{color:rgba(255,255,255,0.55);font-weight:500}
@@ -45,7 +50,13 @@ body{font-family:'Georgia','Noto Serif SC',serif;background:var(--dark);color:va
 #main{flex:1;display:flex;overflow:hidden}
 
 /* SIDEBAR */
-#sidebar{width:var(--sw);background:var(--dark2);display:flex;flex-direction:column;border-right:1px solid var(--border);flex-shrink:0;overflow:hidden}
+#sidebar{width:var(--sw);min-width:180px;max-width:480px;background:var(--dark2);display:flex;flex-direction:column;border-right:1px solid var(--border);flex-shrink:0;overflow:hidden;transition:width .25s ease,min-width .25s ease,opacity .25s ease;position:relative}
+#sidebar.collapsed{width:0;min-width:0;border-right:none;overflow:hidden;opacity:0}
+
+/* COLLAPSE BUTTON - 放在侧边栏和编辑器之间 */
+.sidebar-toggle{width:18px;height:44px;background:var(--dark3);border:1px solid var(--border);border-left:none;border-radius:0 5px 5px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.3);font-size:9px;transition:all .15s;flex-shrink:0;align-self:center;z-index:15;margin-left:-2px}
+.sidebar-toggle:hover{background:var(--dark4);color:rgba(255,255,255,.7)}
+#sidebar.collapsed~.sidebar-toggle{color:rgba(255,255,255,.5)}
 .stabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
 .stab{flex:1;padding:10px 0;text-align:center;font-size:11px;font-family:sans-serif;letter-spacing:.5px;font-weight:500;text-transform:uppercase;color:rgba(255,255,255,0.3);cursor:pointer;border-bottom:2px solid transparent;transition:all .17s}
 .stab:hover{color:rgba(255,255,255,0.58)}
@@ -224,7 +235,7 @@ body{font-family:'Georgia','Noto Serif SC',serif;background:var(--dark);color:va
 </head>
 <body>
 
-<div id="header">
+<div id="header" data-tauri-drag-region>
   <div class="logo-icon">剧</div>
   <div class="logo-text">剧本创作工坊</div>
   <div id="hsp"></div>
@@ -252,6 +263,7 @@ body{font-family:'Georgia','Noto Serif SC',serif;background:var(--dark);color:va
     <div class="spanel"    id="pan-scenes">  <div class="pscroll" id="list-scenes"></div></div>
     <div class="spanel"    id="pan-chars">   <div class="pscroll" id="list-chars"></div></div>
   </div>
+  <button class="sidebar-toggle" id="sidebar-toggle-btn" onclick="toggleSidebar()" title="收起/展开侧边栏">◀</button>
   <div id="eda">
     <div id="empty">
       <div class="eico">✍️</div>
@@ -1369,17 +1381,16 @@ function markCharUsed(p,charId){
   if(idx!==0){p.recentChars.unshift(charId)}
   if(p.recentChars.length>10)p.recentChars.pop();
 }
-function getSortedChars(p){
-  if(!p||!p.characters)return[];
-  const recent=getRecentChars(p);
-  const recents=new Set(recent);
-  return [...p.characters].sort((a,b)=>{
-    const ai=recent.indexOf(a.id),bi=recent.indexOf(b.id);
-    if(ai>=0&&bi>=0)return ai-bi;
-    if(ai>=0)return-1;
-    if(bi>=0)return 1;
-    return 0;
-  });
+// 获取排序后的角色列表：选中的角色放在第一位，其他依次后移
+function getSortedChars(p,selectedCharId){
+  if(!p||!p.characters||!p.characters.length)return[];
+  const chars=[...p.characters];
+  if(!selectedCharId)return chars; // 没有选中角色，返回原顺序
+  const idx=chars.findIndex(c=>c.id===selectedCharId);
+  if(idx<=0)return chars; // 已在第一位或未找到，返回原顺序
+  // 把选中的角色移到第一位
+  const selected=chars.splice(idx,1)[0];
+  return [selected,...chars];
 }
 
 function changeChar(sel,bid){
@@ -1422,7 +1433,7 @@ function refreshCharButtons(dblock,bid,p,charId){
 // 构建角色快捷按钮 HTML
 function buildCharButtons(p,bid,selId){
   if(!p||!p.characters||!p.characters.length)return'';
-  const sorted=getSortedChars(p);
+  const sorted=getSortedChars(p,selId);
   const maxBtns=6;
   let html='<div class="char-quick-btns">';
   for(let i=0;i<Math.min(sorted.length,maxBtns);i++){
@@ -2134,6 +2145,62 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape')document.querySelectorAll('.moverlay').forEach(m=>{if(m.style.display!=='none')m.style.display='none'});
 });
 
+/* ── SIDEBAR RESIZE & COLLAPSE ── */
+let _sidebarCollapsed=false;
+let _sidebarWidth=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sw'))||272;
+
+function toggleSidebar(){
+  const sidebar=document.getElementById('sidebar');
+  const toggleBtn=document.getElementById('sidebar-toggle-btn');
+  if(_sidebarCollapsed){
+    sidebar.classList.remove('collapsed');
+    sidebar.style.width=_sidebarWidth+'px';
+    sidebar.style.minWidth='180px';
+    _sidebarCollapsed=false;
+    if(toggleBtn)toggleBtn.textContent='◀';
+  }else{
+    sidebar.classList.add('collapsed');
+    sidebar.style.width='0';
+    sidebar.style.minWidth='0';
+    _sidebarCollapsed=true;
+    if(toggleBtn)toggleBtn.textContent='▶';
+  }
+}
+
+function initSidebarResize(){
+  const resizer=document.getElementById('sidebar-resizer');
+  const sidebar=document.getElementById('sidebar');
+  let isResizing=false;
+  let startX,startWidth;
+
+  resizer.addEventListener('mousedown',(e)=>{
+    if(_sidebarCollapsed)return;
+    isResizing=true;
+    startX=e.clientX;
+    startWidth=sidebar.offsetWidth;
+    resizer.classList.add('dragging');
+    document.body.style.cursor='col-resize';
+    document.body.style.userSelect='none';
+  });
+
+  document.addEventListener('mousemove',(e)=>{
+    if(!isResizing)return;
+    const diff=e.clientX-startX;
+    const newWidth=Math.max(180,Math.min(480,startWidth+diff));
+    sidebar.style.width=newWidth+'px';
+    _sidebarWidth=newWidth;
+  });
+
+  document.addEventListener('mouseup',()=>{
+    if(isResizing){
+      isResizing=false;
+      resizer.classList.remove('dragging');
+      document.body.style.cursor='';
+      document.body.style.userSelect='';
+    }
+  });
+}
+
 /* ── INIT ── */
 // 监听来自主页的字体设置消息
 window.addEventListener('message',(e)=>{
@@ -2156,6 +2223,27 @@ async function init(){
   // 加载项目后，解析图片引用
   for (const proj of APP.projects) {
     await resolveAvatarRefs(proj);
+  }
+  
+  // 初始化侧边栏拖拽调整宽度
+  initSidebarResize();
+  
+  // 备用窗口拖动实现 (当 data-tauri-drag-region 不工作时使用)
+  const header=document.getElementById('header');
+  if(header){
+    header.addEventListener('mousedown',async(e)=>{
+      // 如果点击的是按钮，则不触发拖动
+      if(e.target.closest('button'))return;
+      // 调用 Tauri API 开始拖动
+      if(window.__TAURI__){
+        try{
+          const{getCurrentWindow}=window.__TAURI__.window;
+          await getCurrentWindow().startDragging();
+        }catch(err){
+          console.log('Drag API not available:',err);
+        }
+      }
+    });
   }
   
   if(APP.activeProjId&&getProject(APP.activeProjId)){
