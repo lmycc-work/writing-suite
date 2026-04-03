@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>创作套件</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ui-font-size:14px;
+  --editor-font-size:17px;
+}
+html,body{height:100%;overflow:hidden;background:#16161a;font-family:'PingFang SC','Microsoft YaHei',sans-serif;font-size:var(--ui-font-size)}
+#tabbar{height:44px;background:#16161a;border-bottom:1px solid rgba(255,255,255,0.07);display:flex;align-items:center;padding:0 16px;gap:2px;-webkit-app-region:drag;flex-shrink:0;user-select:none}
+.mac-space{width:76px;flex-shrink:0;-webkit-app-region:drag}
+.win-space{width:10px;flex-shrink:0}
+.suite-name{font-size:12px;font-weight:700;letter-spacing:2px;color:rgba(255,255,255,0.28);margin-right:12px;-webkit-app-region:drag}
+.tab{height:30px;padding:0 13px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.38);border:1px solid transparent;transition:all 0.15s;-webkit-app-region:no-drag;white-space:nowrap;background:none;letter-spacing:0.3px}
+.tab:hover{color:rgba(255,255,255,0.72);background:rgba(255,255,255,0.06)}
+.tab.active{color:#fff;background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.13)}
+.tab-icon{font-size:13px;line-height:1}
+.flex1{flex:1;-webkit-app-region:drag}
+#frames{position:relative;height:calc(100vh - 44px)}
+.frame{position:absolute;inset:0;width:100%;height:100%;border:none;display:none}
+.frame.active{display:block}
+
+/* 设置按钮 */
+.settings-btn{height:30px;width:30px;border-radius:7px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.38);border:1px solid transparent;transition:all 0.15s;-webkit-app-region:no-drag;background:none}
+.settings-btn:hover{color:rgba(255,255,255,0.72);background:rgba(255,255,255,0.06)}
+
+/* 设置面板 */
+.settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:none;align-items:center;justify-content:center}
+.settings-overlay.open{display:flex}
+.settings-panel{background:#1e1e26;border-radius:12px;padding:24px;width:360px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+.settings-title{font-size:16px;font-weight:600;color:#fff;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between}
+.settings-close{background:none;border:none;color:rgba(255,255,255,0.5);font-size:20px;cursor:pointer;padding:0;line-height:1}
+.settings-close:hover{color:#fff}
+.settings-section{margin-bottom:18px}
+.settings-section:last-child{margin-bottom:0}
+.settings-label{font-size:13px;color:rgba(255,255,255,0.7);margin-bottom:8px;display:block}
+.settings-row{display:flex;align-items:center;gap:12px}
+.settings-slider{flex:1;-webkit-appearance:none;height:6px;border-radius:3px;background:#2e2e3a;outline:none}
+.settings-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#c9a84c;cursor:pointer}
+.settings-value{min-width:36px;text-align:right;font-size:13px;color:#c9a84c;font-weight:500}
+.settings-hint{font-size:11px;color:rgba(255,255,255,0.4);margin-top:6px}
+</style>
+</head>
+<body>
+<div id="tabbar">
+  <div class="mac-space" id="mac-space" style="display:none"></div>
+  <div class="win-space" id="win-space" style="display:none"></div>
+  <div class="suite-name">创作套件</div>
+  <button class="tab active" data-tab="novel" onclick="go('novel')"><span class="tab-icon">📚</span>小说工坊</button>
+  <button class="tab" data-tab="screenplay" onclick="go('screenplay')"><span class="tab-icon">🎬</span>剧本工坊</button>
+  <button class="tab" data-tab="reading" onclick="go('reading')"><span class="tab-icon">📖</span>读书记录</button>
+  <div class="flex1"></div>
+  <button class="settings-btn" onclick="openSettings()" title="设置">⚙</button>
+</div>
+<div id="frames">
+  <iframe class="frame active" id="frame-novel"      src="novel.html"></iframe>
+  <iframe class="frame"        id="frame-screenplay" src="screenplay.html"></iframe>
+  <iframe class="frame"        id="frame-reading"    src="reading.html"></iframe>
+</div>
+
+<!-- 设置面板 -->
+<div class="settings-overlay" id="settingsOverlay" onclick="closeSettingsOnOverlay(event)">
+  <div class="settings-panel" onclick="event.stopPropagation()">
+    <div class="settings-title">
+      <span>⚙ 设置</span>
+      <button class="settings-close" onclick="closeSettings()">×</button>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">界面字体大小</label>
+      <div class="settings-row">
+        <input type="range" class="settings-slider" id="uiFontSize" min="12" max="20" value="14" oninput="updateSettings()">
+        <span class="settings-value" id="uiFontSizeVal">14px</span>
+      </div>
+      <div class="settings-hint">调整侧边栏、按钮等界面元素字体</div>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">小说编辑区字体大小</label>
+      <div class="settings-row">
+        <input type="range" class="settings-slider" id="novelFontSize" min="14" max="28" value="17" oninput="updateSettings()">
+        <span class="settings-value" id="novelFontSizeVal">17px</span>
+      </div>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">剧本编辑区字体大小</label>
+      <div class="settings-row">
+        <input type="range" class="settings-slider" id="scriptFontSize" min="12" max="24" value="15" oninput="updateSettings()">
+        <span class="settings-value" id="scriptFontSizeVal">15px</span>
+      </div>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">读书记录字体大小</label>
+      <div class="settings-row">
+        <input type="range" class="settings-slider" id="readingFontSize" min="12" max="20" value="14" oninput="updateSettings()">
+        <span class="settings-value" id="readingFontSizeVal">14px</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="_export.js"></script>
+<script>
+const isMac = navigator.platform.toLowerCase().startsWith('mac');
+if (isMac) document.getElementById('mac-space').style.display = 'block';
+else        document.getElementById('win-space').style.display = 'block';
+let cur = 'novel';
+function go(name) {
+  if (name === cur) return;
+  cur = name;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.frame').forEach(f => f.classList.toggle('active', f.id === 'frame-' + name));
+}
+
+// ── 设置功能 ──
+const SETTINGS_KEY = 'writing_suite_settings';
+let settings = {
+  uiFontSize: 14,
+  novelFontSize: 17,
+  scriptFontSize: 15,
+  readingFontSize: 14
+};
+
+// 加载设置
+function loadSettings() {
+  try {
+    const saved = localStorage.getItem(SETTINGS_KEY);
+    if (saved) settings = { ...settings, ...JSON.parse(saved) };
+  } catch(e) {}
+  applySettings();
+}
+
+// 应用设置
+function applySettings() {
+  document.documentElement.style.setProperty('--ui-font-size', settings.uiFontSize + 'px');
+  document.documentElement.style.setProperty('--editor-font-size', settings.novelFontSize + 'px');
+  
+  // 更新滑块值
+  document.getElementById('uiFontSize').value = settings.uiFontSize;
+  document.getElementById('novelFontSize').value = settings.novelFontSize;
+  document.getElementById('scriptFontSize').value = settings.scriptFontSize;
+  document.getElementById('readingFontSize').value = settings.readingFontSize;
+  
+  // 更新显示值
+  document.getElementById('uiFontSizeVal').textContent = settings.uiFontSize + 'px';
+  document.getElementById('novelFontSizeVal').textContent = settings.novelFontSize + 'px';
+  document.getElementById('scriptFontSizeVal').textContent = settings.scriptFontSize + 'px';
+  document.getElementById('readingFontSizeVal').textContent = settings.readingFontSize + 'px';
+  
+  // 通知 iframe 更新
+  notifyFrames();
+}
+
+// 通知 iframe 更新字体
+function notifyFrames() {
+  const frames = ['frame-novel', 'frame-screenplay', 'frame-reading'];
+  frames.forEach(id => {
+    const frame = document.getElementById(id);
+    if (frame && frame.contentWindow) {
+      frame.contentWindow.postMessage({ type: 'fontSettings', settings }, '*');
+    }
+  });
+}
+
+// 更新设置
+function updateSettings() {
+  settings.uiFontSize = parseInt(document.getElementById('uiFontSize').value);
+  settings.novelFontSize = parseInt(document.getElementById('novelFontSize').value);
+  settings.scriptFontSize = parseInt(document.getElementById('scriptFontSize').value);
+  settings.readingFontSize = parseInt(document.getElementById('readingFontSize').value);
+  
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  applySettings();
+}
+
+// 打开设置
+function openSettings() {
+  document.getElementById('settingsOverlay').classList.add('open');
+}
+
+// 关闭设置
+function closeSettings() {
+  document.getElementById('settingsOverlay').classList.remove('open');
+}
+
+function closeSettingsOnOverlay(e) {
+  if (e.target.id === 'settingsOverlay') closeSettings();
+}
+
+// 暴露给 iframe 获取设置
+window.getSettings = () => settings;
+
+// 初始化
+loadSettings();
+</script>
+</body>
+</html>

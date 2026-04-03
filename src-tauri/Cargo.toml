@@ -1,0 +1,21 @@
+[package]
+name = "writing-suite"
+version = "1.0.0"
+description = "创作套件 — 小说工坊 · 剧本工坊 · 读书记录"
+authors = ["you"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.7", features = [ "fs-all", "path-all", "dialog-all",
+  "devtools", "shell-open",
+  "window-maximize", "window-minimize", "window-close", "window-start-dragging"
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

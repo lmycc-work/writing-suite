@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>读书记录</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<script>
+/* ── 跨平台存储桥接层 v2 ──
+   修复：确保数据正确持久化到 Tauri 文件系统
+*/
+const Store = (() => {
+  // 尝试从父窗口或当前窗口获取 Tauri API
+  function getTauri() {
+    try { if (window.__TAURI__) return window.__TAURI__; } catch(_) {}
+    try { if (window.parent && window.parent.__TAURI__) return window.parent.__TAURI__; } catch(_) {}
+    return null;
+  }
+
+  async function get(key) {
+    // 优先从文件读取（Tauri 持久化存储）
+    const tauri = getTauri();
+    if (tauri) {
+      try {
+        const {readTextFile, BaseDirectory} = tauri.fs;
+        const txt = await readTextFile(key + '.json', {dir: BaseDirectory.AppData});
+        const data = JSON.parse(txt);
+        // 同步到 localStorage 作为缓存
+        try { localStorage.setItem(key, JSON.stringify(data)); } catch(_) {}
+        return data;
+      } catch(_) {}
+    }
+    // 降级：从 localStorage 读取
+    try {
+      const r = localStorage.getItem(key);
+      if (r) return JSON.parse(r);
+    } catch(_) {}
+    return null;
+  }
+
+  async function set(key, val) {
+    const json = JSON.stringify(val);
+    // 主存储：写入 Tauri 文件系统
+    const tauri = getTauri();
+    if (tauri) {
+      try {
+        const {writeTextFile, createDir, BaseDirectory} = tauri.fs;
+        try { await createDir('', {dir: BaseDirectory.AppData, recursive: true}); } catch(_) {}
+        await writeTextFile(key + '.json', JSON.stringify(val, null, 2), {dir: BaseDirectory.AppData});
+      } catch(e) { console.error('Store.set 文件写入失败:', e); }
+    }
+    // 缓存：写入 localStorage
+    try { localStorage.setItem(key, json); } catch(_) {}
+  }
+
+  return {get, set};
+})();
+
+// 供模块外部访问 Tauri API（用于导出等功能）
+function getTauriAPI() {
+  try { if (window.__TAURI__) return window.__TAURI__; } catch(_) {}
+  try { if (window.parent && window.parent.__TAURI__) return window.parent.__TAURI__; } catch(_) {}
+  return null;
+}
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+:root {
+  --bg: #F6F3EE;
+  --surface: #FFFFFF;
+  --surface2: #EEE9E2;
+  --accent: #7A5230;
+  --accent2: #C4916A;
+  --done-bg: #EAF4ED;
+  --done-border: #A8D4B3;
+  --done-text: #2D6B43;
+  --text: #251C12;
+  --text2: #6B5A47;
+  --text3: #9C8B7A;
+  --border: rgba(122,82,48,0.13);
+  --border2: rgba(122,82,48,0.28);
+  --radius: 14px;
+  --radius-sm: 8px;
+  --shadow: 0 4px 18px rgba(44,36,22,0.09);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Noto Sans SC', sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+
+.topbar {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 0 32px; height: 56px;
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 50;
+}
+.topbar-logo { font-family: 'Noto Serif SC', serif; font-size: 17px; font-weight: 600; color: var(--accent); letter-spacing: 2px; }
+.topbar-right { display: flex; gap: 8px; align-items: center; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 7px 13px; border-radius: var(--radius-sm);
+  font-size: 12px; font-family: inherit; cursor: pointer;
+  border: 1px solid var(--border2); background: transparent;
+  color: var(--text2); transition: all 0.18s; font-weight: 400;
+}
+.btn:hover { background: var(--surface2); color: var(--accent); border-color: var(--accent); }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { background: #653F1F; color: #fff; }
+.btn-danger { color: #8B2020; border-color: rgba(139,32,32,0.3); }
+.btn-danger:hover { background: #fff0f0; border-color: #8B2020; }
+
+.main { max-width: 1200px; margin: 0 auto; padding: 26px 28px 60px; }
+
+/* Dashboard strip */
+.dash-strip { display: grid; grid-template-columns: 120px 120px 1fr 1.3fr; gap: 14px; margin-bottom: 14px; }
+
+/* 总进度条 */
+.total-progress-card {
+  background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--border); padding: 14px 20px;
+  margin-bottom: 28px;
+  display: flex; align-items: center; gap: 20px;
+}
+.tp-left { flex-shrink: 0; }
+.tp-label { font-size: 11px; color: var(--text3); margin-bottom: 4px; letter-spacing: 0.4px; }
+.tp-pages { font-size: 13px; color: var(--text2); white-space: nowrap; }
+.tp-pages b { color: var(--text); font-weight: 600; }
+.tp-center { flex: 1; min-width: 0; }
+.tp-bar-bg { background: var(--surface2); border-radius: 99px; height: 10px; overflow: hidden; }
+.tp-bar-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.6s ease; }
+.tp-bar-label { display: flex; justify-content: space-between; margin-top: 5px; font-size: 11px; color: var(--text3); }
+.tp-right { flex-shrink: 0; text-align: right; }
+.tp-pct { font-size: 28px; font-weight: 500; color: var(--accent); line-height: 1; }
+.tp-pct sup { font-size: 12px; font-weight: 400; color: var(--text3); }
+
+.stat-card {
+  background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--border); padding: 16px 16px;
+}
+.stat-label { font-size: 11px; color: var(--text3); letter-spacing: 0.4px; margin-bottom: 6px; }
+.stat-value { font-size: 30px; font-weight: 500; line-height: 1; color: var(--text); }
+.stat-value sup { font-size: 12px; font-weight: 400; color: var(--text3); margin-left: 2px; }
+
+.chart-strip {
+  background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--border); padding: 14px 16px;
+}
+.chart-strip-title { font-size: 11px; color: var(--text3); margin-bottom: 8px; }
+.chart-wrap-sm { position: relative; width: 100%; height: 72px; }
+
+.pie-strip {
+  background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--border); padding: 14px 16px;
+  display: flex; gap: 14px; align-items: center;
+}
+.pie-wrap { position: relative; width: 80px; min-width: 80px; height: 80px; }
+.pie-legend { flex: 1; min-width: 0; }
+.pie-legend-title { font-size: 11px; color: var(--text3); margin-bottom: 6px; }
+.legend-row { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text2); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.legend-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+
+/* Section head */
+.section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.section-title { font-family: 'Noto Serif SC', serif; font-size: 17px; font-weight: 600; }
+.section-count { font-size: 12px; color: var(--text3); }
+
+/* Books grid */
+.books-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 16px; }
+
+/* Book card */
+.book-card {
+  background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--border); overflow: hidden;
+  display: flex; flex-direction: column;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.book-card:hover { box-shadow: var(--shadow); transform: translateY(-2px); }
+.book-card.done { border-color: var(--done-border); }
+
+.book-top { display: flex; }
+.book-cover-wrap { width: 80px; min-width: 80px; height: 112px; overflow: hidden; flex-shrink: 0; }
+.book-cover-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.book-cover-ph {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(155deg, #EDE6DC, #D5C9B8);
+  font-family: 'Noto Serif SC', serif; font-size: 11px;
+  color: var(--text2); text-align: center; padding: 8px; line-height: 1.5;
+}
+.book-meta { flex: 1; padding: 11px 12px 10px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.book-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; margin-bottom: 2px; }
+.book-title { font-size: 13px; font-weight: 500; color: var(--text); line-height: 1.4; }
+.done-badge {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: var(--done-bg); color: var(--done-text);
+  border: 1px solid var(--done-border);
+  font-size: 10px; padding: 2px 7px; border-radius: 99px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.book-pages { font-size: 11px; color: var(--text3); }
+.prog-wrap { margin-top: auto; padding-top: 6px; }
+.prog-bar-bg { background: var(--surface2); border-radius: 99px; height: 5px; margin-bottom: 3px; }
+.prog-bar { border-radius: 99px; height: 100%; transition: width 0.5s; }
+.prog-bar.reading { background: var(--accent2); }
+.prog-bar.done-bar { background: var(--done-text); }
+.prog-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--text3); }
+
+/* Mini chart */
+.book-chart-area { padding: 6px 10px 8px; border-top: 1px solid var(--border); }
+.book-chart-label { font-size: 10px; color: var(--text3); margin-bottom: 4px; }
+.mini-chart-wrap { position: relative; width: 100%; height: 66px; overflow: hidden; }
+
+/* Update panel */
+.book-update {
+  border-top: 1px solid var(--border);
+  padding: 9px 12px; display: none;
+  gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.book-update.open { display: flex; }
+.update-input {
+  width: 90px; padding: 6px 9px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border2); background: var(--bg);
+  font-size: 12px; font-family: inherit; color: var(--text); outline: none;
+}
+.update-input:focus { border-color: var(--accent); }
+.expand-btn {
+  width: 100%; display: flex; align-items: center; justify-content: center;
+  padding: 7px; font-size: 11px; color: var(--text3); cursor: pointer;
+  background: none; border: none; border-top: 1px solid var(--border);
+  font-family: inherit; transition: background 0.15s; gap: 4px;
+}
+.expand-btn:hover { background: var(--surface2); color: var(--accent); }
+
+/* Empty */
+.empty { text-align: center; padding: 60px; color: var(--text3); grid-column: 1/-1; }
+.empty p { margin-bottom: 14px; }
+
+/* Modal */
+.overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(37,28,18,0.5); z-index: 200;
+  align-items: center; justify-content: center;
+}
+.overlay.open { display: flex; }
+.modal {
+  background: var(--surface); border-radius: 16px;
+  padding: 28px; width: 460px; max-width: 95vw; max-height: 90vh; overflow-y: auto;
+}
+.modal-title { font-family: 'Noto Serif SC', serif; font-size: 17px; font-weight: 600; margin-bottom: 20px; }
+.form-group { margin-bottom: 14px; }
+.form-label { font-size: 12px; color: var(--text2); margin-bottom: 5px; display: block; }
+.form-input {
+  width: 100%; padding: 8px 11px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border2); background: var(--bg);
+  font-size: 13px; font-family: inherit; color: var(--text); outline: none;
+}
+.form-input:focus { border-color: var(--accent); }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+
+.toast {
+  position: fixed; bottom: 22px; right: 22px;
+  background: var(--text); color: #fff;
+  padding: 9px 16px; border-radius: 8px; font-size: 12px;
+  opacity: 0; transform: translateY(8px);
+  transition: all 0.25s; z-index: 999; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+
+/* 删除确认弹窗 */
+.confirm-modal {
+  background: var(--surface); border-radius: 16px;
+  padding: 24px 28px; width: 360px; max-width: 95vw;
+}
+.confirm-title { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.confirm-msg { font-size: 13px; color: var(--text2); margin-bottom: 20px; line-height: 1.6; }
+.confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* 书籍卡片操作按钮行 */
+.book-actions { display: flex; gap: 6px; padding: 0 12px 10px; }
+
+/* ── 调试面板 ── */
+#debug-panel {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 9999;
+  background: rgba(20,20,20,0.96); color: #0f0; font-size: 11px;
+  font-family: monospace; max-height: 200px; overflow-y: auto;
+  display: none; border-top: 2px solid #0f0;
+}
+#debug-panel.open { display: block; }
+#debug-header {
+  background: #111; padding: 4px 10px; display: flex;
+  align-items: center; justify-content: space-between; position: sticky; top: 0;
+}
+#debug-header span { color: #aaa; font-size: 10px; }
+#debug-clear { color: #f66; cursor: pointer; font-size: 10px; background: none; border: none; font-family: monospace; }
+#debug-close { color: #aaa; cursor: pointer; font-size: 13px; background: none; border: none; }
+#debug-lines { padding: 6px 10px; }
+.dl-log { color: #ccc; }
+.dl-warn { color: #fa0; }
+.dl-error { color: #f55; font-weight: bold; }
+#debug-toggle {
+  position: fixed; bottom: 10px; left: 10px; z-index: 9998;
+  background: rgba(0,0,0,0.7); color: #0f0; border: 1px solid #0f0;
+  border-radius: 6px; padding: 4px 10px; font-size: 11px;
+  cursor: pointer; font-family: monospace;
+}
+
+/* ── 导出路径选择弹窗 ── */
+.export-modal {
+  background: var(--surface); border-radius: 16px;
+  padding: 24px 28px; width: 420px; max-width: 95vw;
+}
+.export-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+.export-desc { font-size: 12px; color: var(--text3); margin-bottom: 16px; line-height: 1.6; }
+.export-opt {
+  border: 1px solid var(--border2); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 10px; cursor: pointer;
+  transition: all 0.15s;
+}
+.export-opt:hover { border-color: var(--accent); background: var(--surface2); }
+.export-opt-title { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
+.export-opt-path { font-size: 11px; color: var(--text3); font-family: monospace; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-logo">读书记录</div>
+  <div class="topbar-right">
+    <button class="btn" onclick="exportData()">⬇ 导出数据</button>
+    <button class="btn" onclick="document.getElementById('importFile').click()">⬆ 导入数据</button>
+    <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
+    <button class="btn btn-primary" onclick="openAddModal()">＋ 添加书籍</button>
+  </div>
+</header>
+
+<div class="main">
+  <div class="dash-strip">
+    <div class="stat-card">
+      <div class="stat-label">书架总数</div>
+      <div class="stat-value" id="stat-total">0<sup>本</sup></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">今日阅读</div>
+      <div class="stat-value" id="stat-today">0<sup>页</sup></div>
+    </div>
+    <div class="chart-strip">
+      <div class="chart-strip-title">近 7 天每日阅读量（页）</div>
+      <div class="chart-wrap-sm"><canvas id="weeklyChart"></canvas></div>
+    </div>
+    <div class="pie-strip">
+      <div class="pie-wrap"><canvas id="pieChart"></canvas></div>
+      <div class="pie-legend">
+        <div class="pie-legend-title" id="pie-title">今日各书占比</div>
+        <div id="pie-legend"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 总阅读进度 -->
+  <div class="total-progress-card">
+    <div class="tp-left">
+      <div class="tp-label">书架总进度</div>
+      <div class="tp-pages" id="tp-pages">— / — 页</div>
+    </div>
+    <div class="tp-center">
+      <div class="tp-bar-bg">
+        <div class="tp-bar-fill" id="tp-bar" style="width:0%"></div>
+      </div>
+      <div class="tp-bar-label">
+        <span id="tp-reading-info">阅读中 — 本</span>
+        <span id="tp-done-info">已读完 — 本</span>
+      </div>
+    </div>
+    <div class="tp-right">
+      <div class="tp-pct" id="tp-pct">0<sup>%</sup></div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <div class="section-title">我的书架</div>
+    <div class="section-count" id="books-count"></div>
+  </div>
+  <div class="books-grid" id="books-grid"></div>
+</div>
+
+<div class="overlay" id="addModal">
+  <div class="modal">
+    <div class="modal-title" id="modal-title">添加新书籍</div>
+    <div class="form-group">
+      <label class="form-label">书名 *</label>
+      <input type="text" class="form-input" id="f-title" placeholder="请输入书名">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">总页数 *</label>
+        <input type="number" class="form-input" id="f-total" placeholder="例如 320" min="1">
+      </div>
+      <div class="form-group">
+        <label class="form-label">当前已读页数</label>
+        <input type="number" class="form-input" id="f-current" placeholder="默认 0" min="0">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">封面图片（可选）</label>
+      <input type="file" class="form-input" id="f-cover" accept="image/*">
+      <div id="f-cover-hint" style="font-size:11px;color:var(--text3);margin-top:4px;display:none">不选择则保留原封面</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeAddModal()">取消</button>
+      <button class="btn btn-primary" id="modal-submit-btn" onclick="submitBook()">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除确认弹窗 -->
+<div class="overlay" id="confirmModal">
+  <div class="confirm-modal">
+    <div class="confirm-title">确认删除</div>
+    <div class="confirm-msg" id="confirm-msg">确认删除这本书及所有阅读记录？此操作不可撤销。</div>
+    <div class="confirm-actions">
+      <button class="btn" onclick="closeConfirm()">取消</button>
+      <button class="btn btn-danger" id="confirm-ok-btn">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- 调试面板 -->
+<button id="debug-toggle" onclick="toggleDebug()">🐛 调试</button>
+<div id="debug-panel">
+  <div id="debug-header">
+    <span>调试控制台</span>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button id="debug-clear" onclick="clearDebug()">清空</button>
+      <button id="debug-close" onclick="toggleDebug()">✕</button>
+    </div>
+  </div>
+  <div id="debug-lines"></div>
+</div>
+
+<!-- 导出路径选择弹窗 -->
+<div class="overlay" id="exportModal">
+  <div class="export-modal">
+    <div class="export-title">选择导出位置</div>
+    <div class="export-desc">请选择文件保存到哪里：</div>
+    <div class="export-opt" onclick="doExport('downloads')">
+      <div class="export-opt-title">📥 下载文件夹</div>
+      <div class="export-opt-path">~/Downloads/读书记录_日期.json</div>
+    </div>
+    <div class="export-opt" onclick="doExport('documents')">
+      <div class="export-opt-title">📄 文稿文件夹</div>
+      <div class="export-opt-path">~/Documents/读书记录_日期.json</div>
+    </div>
+    <div class="export-opt" onclick="doExport('desktop')">
+      <div class="export-opt-title">🖥 桌面</div>
+      <div class="export-opt-path">~/Desktop/读书记录_日期.json</div>
+    </div>
+    <div style="margin-top:14px;display:flex;justify-content:flex-end">
+      <button class="btn" onclick="document.getElementById('exportModal').classList.remove('open')">取消</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 所有函数挂到 window 上，确保 iframe 内 onclick 能访问 ──
+let db = { books: {}, logs: {} };
+let weeklyChart = null, pieChart = null;
+const miniCharts = {};
+const PALETTE = ['#C4916A','#4A7C59','#6B9EC5','#C47D2E','#8B5E3C','#A05070','#5A8A80','#9370A8'];
+
+async function loadData() {
+  const r = await Store.get('rtrack2');
+  if (r) db = r;
+}
+async function saveData() { await Store.set('rtrack2', db); }
+function todayStr() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function dateLabel(s) { const d=new Date(s+'T00:00:00'); return `${d.getMonth()+1}/${d.getDate()}`; }
+function getLast7Days() {
+  const days=[];
+  for(let i=6;i>=0;i--){
+    const d=new Date();d.setDate(d.getDate()-i);
+    const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+    days.push(`${y}-${m}-${day}`);
+  }
+  return days;
+}
+
+function getDailyPages(bookId, dateStr) {
+  const logs=db.logs[bookId]||{};
+  const val=logs[dateStr];
+  if(val===undefined) return 0;
+  const sorted=Object.keys(logs).sort();
+  const idx=sorted.indexOf(dateStr);
+  let prev=0;
+  for(let i=idx-1;i>=0;i--){if(logs[sorted[i]]!==undefined){prev=logs[sorted[i]];break;}}
+  return Math.max(0,val-prev);
+}
+
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2000);
+}
+
+// ── modal 状态 ──
+let editingBookId = null;
+
+window.openAddModal = function(){
+  editingBookId = null;
+  document.getElementById('modal-title').textContent = '添加新书籍';
+  document.getElementById('modal-submit-btn').textContent = '添加';
+  document.getElementById('f-cover-hint').style.display = 'none';
+  document.getElementById('addModal').classList.add('open');
+};
+window.closeAddModal = function(){
+  document.getElementById('addModal').classList.remove('open');
+  editingBookId = null;
+  ['f-title','f-total','f-current'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('f-cover').value='';
+};
+
+window.openEditModal = function(id){
+  const b = db.books[id];
+  if (!b) return;
+  editingBookId = id;
+  document.getElementById('modal-title').textContent = '编辑书籍信息';
+  document.getElementById('modal-submit-btn').textContent = '保存';
+  document.getElementById('f-title').value = b.title;
+  document.getElementById('f-total').value = b.total;
+  document.getElementById('f-current').value = b.current;
+  document.getElementById('f-cover').value = '';
+  document.getElementById('f-cover-hint').style.display = 'block';
+  document.getElementById('addModal').classList.add('open');
+};
+
+window.submitBook = function(){
+  if (editingBookId) {
+    editBook();
+  } else {
+    addBook();
+  }
+};
+
+window.addBook = async function(){
+  const title=document.getElementById('f-title').value.trim();
+  const total=parseInt(document.getElementById('f-total').value);
+  const current=parseInt(document.getElementById('f-current').value)||0;
+  if(!title||!total){toast('请填写书名和总页数');return;}
+  const id='b_'+Date.now(), today=todayStr();
+  const coverFile=document.getElementById('f-cover').files[0];
+  async function finalize(cover){
+    db.books[id]={id,title,total,current,cover,addedDate:today};
+    if(!db.logs[id])db.logs[id]={};
+    if(current>0)db.logs[id][today]=current;
+    await saveData();
+    window.closeAddModal();render();toast('已添加《'+title+'》');
+  }
+  if(coverFile){const r=new FileReader();r.onload=async e=>await finalize(e.target.result);r.readAsDataURL(coverFile);}
+  else await finalize(null);
+};
+
+window.editBook = async function(){
+  const b = db.books[editingBookId];
+  if (!b) return;
+  const title = document.getElementById('f-title').value.trim();
+  const total = parseInt(document.getElementById('f-total').value);
+  const current = parseInt(document.getElementById('f-current').value) || 0;
+  if (!title || !total) { toast('请填写书名和总页数'); return; }
+  const coverFile = document.getElementById('f-cover').files[0];
+  async function finalize(cover) {
+    b.title = title;
+    b.total = total;
+    b.current = Math.min(current, total);
+    if (cover !== undefined) b.cover = cover;
+    // 同步当日记录
+    const today = todayStr();
+    if (!db.logs[b.id]) db.logs[b.id] = {};
+    if (b.current > 0) db.logs[b.id][today] = b.current;
+    await saveData();
+    window.closeAddModal();
+    render();
+    toast('《' + title + '》已更新');
+  }
+  if (coverFile) {
+    const r = new FileReader();
+    r.onload = async e => await finalize(e.target.result);
+    r.readAsDataURL(coverFile);
+  } else {
+    await finalize(undefined); // undefined = 保留原封面
+  }
+};
+
+window.toggleUpdate = function(id){
+  const panel=document.getElementById('upanel-'+id);
+  if(!panel)return;
+  panel.classList.toggle('open');
+  if(panel.classList.contains('open')){
+    const inp=document.getElementById('uinp-'+id);
+    if(inp){inp.value=db.books[id].current;inp.focus();}
+  }
+};
+
+window.updateProgress = async function(id){
+  const b=db.books[id];
+  const inp=document.getElementById('uinp-'+id);
+  const newPage=parseInt(inp.value);
+  if(isNaN(newPage)||newPage<0){toast('请输入有效页数');return;}
+  if(newPage>b.total){toast('不能超过总页数 '+b.total);return;}
+  const today=todayStr();
+  if(!db.logs[id])db.logs[id]={};
+  db.logs[id][today]=newPage;
+  b.current=newPage;
+  await saveData();
+  document.getElementById('upanel-'+id).classList.remove('open');
+  render();
+  if(newPage>=b.total) toast('🎉 恭喜读完《'+b.title+'》！');
+  else toast('进度已更新！');
+};
+
+// ── 删除确认弹窗 ──
+let pendingDeleteId = null;
+window.deleteBook = function(id){
+  const b = db.books[id];
+  if (!b) return;
+  pendingDeleteId = id;
+  document.getElementById('confirm-msg').textContent =
+    '确认删除《' + b.title + '》及所有阅读记录？此操作不可撤销。';
+  document.getElementById('confirm-ok-btn').onclick = confirmDelete;
+  document.getElementById('confirmModal').classList.add('open');
+};
+window.closeConfirm = function(){
+  document.getElementById('confirmModal').classList.remove('open');
+  pendingDeleteId = null;
+};
+async function confirmDelete(){
+  if (!pendingDeleteId) return;
+  const title = db.books[pendingDeleteId]?.title || '';
+  delete db.books[pendingDeleteId];
+  delete db.logs[pendingDeleteId];
+  await saveData();
+  window.closeConfirm();
+  render();
+  toast('已删除《' + title + '》');
+}
+
+function getBookDailyData(bookId) {
+  const b = db.books[bookId];
+  const logs = db.logs[bookId] || {};
+  const start = new Date(b.addedDate + 'T00:00:00');
+  const today = new Date();
+  const allLabels = [], allData = [];
+  let prev = 0;
+  for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
+    const _y=d.getFullYear(),_m=String(d.getMonth()+1).padStart(2,'0'),_day=String(d.getDate()).padStart(2,'0');
+    const ds = `${_y}-${_m}-${_day}`;
+    allLabels.push(dateLabel(ds));
+    const cur = logs[ds] !== undefined ? logs[ds] : prev;
+    allData.push(Math.max(0, cur - prev));
+    prev = cur;
+  }
+  // Trim to last 30 days max
+  let labels = allLabels.length > 30 ? allLabels.slice(-30) : allLabels.slice();
+  let data   = allData.length   > 30 ? allData.slice(-30)   : allData.slice();
+  // Pad to minimum 7 points — single-point bar charts don't render in Chart.js
+  const MIN = 7;
+  if (labels.length < MIN) {
+    const pad = MIN - labels.length;
+    const padLabels = [], padData = [];
+    for (let i = pad; i > 0; i--) {
+      const pd = new Date(start);
+      pd.setDate(pd.getDate() - i);
+      const _py=pd.getFullYear(),_pm=String(pd.getMonth()+1).padStart(2,'0'),_pd=String(pd.getDate()).padStart(2,'0');
+      padLabels.push(dateLabel(`${_py}-${_pm}-${_pd}`));
+      padData.push(0);
+    }
+    labels = padLabels.concat(labels);
+    data   = padData.concat(data);
+  }
+  return { labels, data };
+}
+
+function renderMiniChart(id) {
+  const wrap = document.getElementById('mini-wrap-' + id);
+  if (!wrap) return;
+  const { labels, data } = getBookDailyData(id);
+  const b = db.books[id];
+  const isDone = b.current >= b.total;
+  const maxVal = Math.max(...data, 1);
+
+  // Fixed viewBox — no DOM size dependency
+  const VW = 280, BAR_AREA = 50, LABEL_H = 12, VH = BAR_AREA + LABEL_H;
+  const n = data.length;
+  const gap = 2;
+  const barW = Math.floor((VW - gap * (n - 1)) / n);
+
+  const color    = isDone ? '#2D6B43' : '#C4916A';
+  const colorDim = isDone ? 'rgba(45,107,67,0.35)' : 'rgba(196,145,106,0.35)';
+  const labelCol = '#9C8B7A';
+
+  let els = '';
+  // baseline
+  els += `<line x1="0" y1="${BAR_AREA}" x2="${VW}" y2="${BAR_AREA}" stroke="#E0D8CE" stroke-width="0.5"/>`;
+
+  const step = n <= 7 ? 1 : n <= 14 ? 2 : Math.ceil(n / 7);
+
+  data.forEach((v, i) => {
+    const x = i * (barW + gap);
+    const cx = x + barW / 2;
+    // bar height: zero=2px tick, nonzero scales from 6px up to BAR_AREA-2
+    const barH = v === 0 ? 2 : Math.max(6, Math.round((v / maxVal) * (BAR_AREA - 2)));
+    const barY = BAR_AREA - barH;
+    const fill = i === n - 1 ? color : (v > 0 ? colorDim : 'rgba(0,0,0,0.06)');
+    els += `<rect x="${x}" y="${barY}" width="${barW}" height="${barH}" fill="${fill}" rx="1"><title>${labels[i]}: ${v} 页</title></rect>`;
+    // label
+    if (i % step === 0 || i === n - 1) {
+      els += `<text x="${cx}" y="${VH - 1}" text-anchor="middle" font-size="9" font-family="sans-serif" fill="${labelCol}">${labels[i]}</text>`;
+    }
+  });
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${VW} ${VH}" width="100%" height="100%"
+    preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${els}</svg>`;
+}
+
+function renderBooks(){
+  const grid=document.getElementById('books-grid');
+  const books=Object.values(db.books);
+  document.getElementById('books-count').textContent=books.length?books.length+'本':'';
+  if(!books.length){
+    grid.innerHTML=`<div class="empty"><p>书架还是空的，添加你的第一本书吧！</p><button class="btn btn-primary" onclick="openAddModal()">＋ 添加书籍</button></div>`;
+    return;
+  }
+  // Sort: reading books first by most recently updated, then done books
+  function lastUpdated(book) {
+    const logs = db.logs[book.id] || {};
+    const dates = Object.keys(logs);
+    return dates.length ? dates.sort().pop() : book.addedDate;
+  }
+  books.sort((a, b) => {
+    const aDone = a.current >= a.total ? 1 : 0;
+    const bDone = b.current >= b.total ? 1 : 0;
+    if (aDone !== bDone) return aDone - bDone;   // reading before done
+    return lastUpdated(b).localeCompare(lastUpdated(a)); // newer first
+  });
+  grid.innerHTML=books.map(b=>{
+    const isDone=b.current>=b.total;
+    const pct=Math.min(100,Math.round(b.current/b.total*100));
+    const coverHtml=b.cover
+      ?`<img src="${b.cover}" alt="">`
+      :`<div class="book-cover-ph">${b.title}</div>`;
+    const doneBadge=isDone?`<span class="done-badge">✓ 已读完</span>`:'';
+    return `<div class="book-card${isDone?' done':''}">
+      <div class="book-top">
+        <div class="book-cover-wrap">${coverHtml}</div>
+        <div class="book-meta">
+          <div class="book-title-row">
+            <div class="book-title">${b.title}</div>
+            ${doneBadge}
+          </div>
+          <div class="book-pages">${b.current} / ${b.total} 页</div>
+          <div class="prog-wrap">
+            <div class="prog-bar-bg">
+              <div class="prog-bar ${isDone?'done-bar':'reading'}" style="width:${pct}%"></div>
+            </div>
+            <div class="prog-label"><span>${pct}%</span><span>${isDone?'已完成':'阅读中'}</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="book-chart-area">
+        <div class="book-chart-label">每日阅读页数</div>
+        <div class="mini-chart-wrap" id="mini-wrap-${b.id}"></div>
+      </div>
+      <div class="book-update" id="upanel-${b.id}">
+        <input type="number" class="update-input" id="uinp-${b.id}" placeholder="当前页" min="0" max="${b.total}">
+        <button class="btn btn-primary" style="font-size:11px;padding:6px 10px" onclick="updateProgress('${b.id}')">更新</button>
+        <button class="btn" style="font-size:11px;padding:6px 10px" onclick="openEditModal('${b.id}')">✏️ 编辑</button>
+        <button class="btn btn-danger" style="font-size:11px;padding:6px 10px" onclick="deleteBook('${b.id}')">删除</button>
+      </div>
+      <button class="expand-btn" onclick="toggleUpdate('${b.id}')">▸ 更新进度</button>
+    </div>`;
+  }).join('');
+  books.forEach(b => renderMiniChart(b.id));
+}
+
+function renderDashboard(){
+  const books=Object.values(db.books);
+  const today=todayStr(), days7=getLast7Days();
+  const todayTotal=books.reduce((s,b)=>s+getDailyPages(b.id,today),0);
+  document.getElementById('stat-total').innerHTML=books.length+'<sup>本</sup>';
+  document.getElementById('stat-today').innerHTML=todayTotal+'<sup>页</sup>';
+  const weeklyTotals=days7.map(day=>books.reduce((s,b)=>s+getDailyPages(b.id,day),0));
+  renderWeeklyChart(days7,weeklyTotals);
+  let pieDay=today;
+  let pieData=books.map(b=>({title:b.title,pages:getDailyPages(b.id,today)})).filter(x=>x.pages>0);
+  if(!pieData.length){
+    for(let i=days7.length-2;i>=0;i--){
+      const c=days7[i];
+      const check=books.map(b=>({title:b.title,pages:getDailyPages(b.id,c)})).filter(x=>x.pages>0);
+      if(check.length){pieData=check;pieDay=c;break;}
+    }
+  }
+  document.getElementById('pie-title').textContent=pieData.length?(pieDay===today?'今日':dateLabel(pieDay))+'各书占比':'暂无记录';
+  renderPieChart(pieData);
+
+  // ── 总进度 ──
+  const totalPages = books.reduce((s,b) => s + (b.total||0), 0);
+  const readPages  = books.reduce((s,b) => s + Math.min(b.current||0, b.total||0), 0);
+  const pct = totalPages > 0 ? Math.round(readPages / totalPages * 100) : 0;
+  const doneCount    = books.filter(b => b.current >= b.total && b.total > 0).length;
+  const readingCount = books.filter(b => b.current < b.total || b.total === 0).length;
+  document.getElementById('tp-bar').style.width = pct + '%';
+  document.getElementById('tp-pct').innerHTML = pct + '<sup>%</sup>';
+  document.getElementById('tp-pages').innerHTML = '<b>' + readPages.toLocaleString() + '</b> / ' + totalPages.toLocaleString() + ' 页';
+  document.getElementById('tp-reading-info').textContent = '阅读中 ' + readingCount + ' 本';
+  document.getElementById('tp-done-info').textContent = '已读完 ' + doneCount + ' 本';
+}
+
+function renderWeeklyChart(days,totals){
+  if(weeklyChart)weeklyChart.destroy();
+  weeklyChart=new Chart(document.getElementById('weeklyChart').getContext('2d'),{
+    type:'bar',
+    data:{
+      labels:days.map(dateLabel),
+      datasets:[{
+        data:totals,
+        backgroundColor:days.map((_,i)=>i===days.length-1?'#C4916A':'rgba(196,145,106,0.38)'),
+        borderRadius:4,borderSkipped:false
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${c.parsed.y} 页`}}},
+      scales:{
+        x:{ticks:{font:{size:10},color:'#9C8B7A'},grid:{display:false}},
+        y:{ticks:{font:{size:10},color:'#9C8B7A',precision:0},grid:{color:'rgba(0,0,0,0.04)'},beginAtZero:true}
+      }
+    }
+  });
+}
+
+function renderPieChart(pieData){
+  if(pieChart)pieChart.destroy();
+  const legend=document.getElementById('pie-legend');
+  if(!pieData.length){
+    legend.innerHTML='<div style="font-size:11px;color:var(--text3)">还没有记录</div>';
+    pieChart=new Chart(document.getElementById('pieChart').getContext('2d'),{
+      type:'doughnut',
+      data:{labels:[],datasets:[{data:[1],backgroundColor:['#EEE9E2'],borderWidth:0}]},
+      options:{plugins:{legend:{display:false},tooltip:{enabled:false}},cutout:'65%',animation:false}
+    });
+    return;
+  }
+  const labels=pieData.map(x=>x.title),data=pieData.map(x=>x.pages);
+  const total=data.reduce((a,b)=>a+b,0);
+  legend.innerHTML=labels.map((l,i)=>{
+    const pct=Math.round(data[i]/total*100);
+    const short=l.length>8?l.slice(0,8)+'…':l;
+    return `<div class="legend-row"><div class="legend-dot" style="background:${PALETTE[i%PALETTE.length]}"></div>${short} ${pct}%</div>`;
+  }).join('');
+  pieChart=new Chart(document.getElementById('pieChart').getContext('2d'),{
+    type:'doughnut',
+    data:{labels,datasets:[{data,backgroundColor:labels.map((_,i)=>PALETTE[i%PALETTE.length]),borderWidth:0,hoverOffset:6}]},
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${c.label}: ${c.parsed} 页`}}},
+      cutout:'65%'
+    }
+  });
+}
+
+// ── 调试面板 ──
+(function() {
+  const methods = { log: 'dl-log', warn: 'dl-warn', error: 'dl-error' };
+  Object.keys(methods).forEach(m => {
+    const orig = console[m].bind(console);
+    console[m] = function(...args) {
+      orig(...args);
+      const lines = document.getElementById('debug-lines');
+      if (!lines) return;
+      const d = document.createElement('div');
+      d.className = methods[m];
+      d.textContent = '[' + m + '] ' + args.map(a => {
+        try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch(_) { return String(a); }
+      }).join(' ');
+      lines.appendChild(d);
+      lines.scrollTop = lines.scrollHeight;
+    };
+  });
+  window.onerror = (msg, src, line, col, err) => {
+    console.error('UNCAUGHT: ' + msg + ' (' + (src||'') + ':' + line + ')');
+  };
+  window.onunhandledrejection = (e) => {
+    console.error('UNHANDLED PROMISE: ' + (e.reason || e));
+  };
+})();
+window.toggleDebug = function() {
+  document.getElementById('debug-panel').classList.toggle('open');
+};
+window.clearDebug = function() {
+  document.getElementById('debug-lines').innerHTML = '';
+};
+
+// ── 导出 ──
+window.exportData = async function() {
+  const jsonStr = JSON.stringify(db, null, 2);
+  const filename = '读书记录_' + todayStr() + '.json';
+  const exporter = (window.parent && window.parent.SuiteExport) || window.SuiteExport;
+  if (exporter) {
+    const result = await exporter.save(filename, jsonStr);
+    if (result.success && result.path && result.path !== 'browser-download') {
+      toast('✓ 已保存到 ' + result.path);
+    } else if (result.success) {
+      toast('✓ 数据已导出（浏览器下载）');
+    } else if (result.error !== 'cancelled') {
+      toast('导出失败');
+    }
+  } else {
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    toast('数据已导出');
+  }
+};
+window.importData = function(e){
+  const file=e.target.files[0];if(!file)return;
+  const r=new FileReader();
+  r.onload=async ev=>{
+    try{
+      const p=JSON.parse(ev.target.result);
+      if(!p.books||!p.logs)throw new Error();
+      db=p;await saveData();render();toast('导入成功！');
+    }catch(err){toast('导入失败，请检查文件格式');}
+    e.target.value='';
+  };
+  r.readAsText(file);
+};
+
+function render(){renderDashboard();renderBooks();}
+(async()=>{ await loadData(); render(); })();
+</script>
+</body>
+</html>
